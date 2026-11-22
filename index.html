@@ -98,6 +98,48 @@
     #keys { display: none; }
   }
   @media (hover: none) { #keys { display: none; } }
+  #hudTop .spacer { margin-left: auto; }
+  #hudRow2 { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  #hudRow2 #par { flex: 1; }
+  #bLevels { min-height: 34px; min-width: 0; padding: 0 12px; font-size: 14px; border-radius: 10px; }
+  #par { color: var(--dim); font-size: 13px; }
+  #overlay .row { display: flex; gap: 8px; justify-content: center; flex-wrap: wrap; margin-top: 10px; }
+  #overlay .row .btn { margin-top: 0; }
+  .star { color: #ffd166; }
+  /* Level select */
+  #levels {
+    position: fixed; inset: 0; display: none; z-index: 10; background: rgba(10,14,22,.94);
+    padding: calc(env(safe-area-inset-top) + 12px) calc(env(safe-area-inset-right) + 16px) calc(env(safe-area-inset-bottom) + 12px) calc(env(safe-area-inset-left) + 16px);
+    flex-direction: column; align-items: center;
+  }
+  #levels.show { display: flex; }
+  #levels .head { width: 100%; max-width: 520px; display: flex; align-items: center; gap: 8px; }
+  #levels h2 { margin: 0; font-size: 20px; flex: 1; }
+  #levels .sum { width: 100%; max-width: 520px; color: var(--dim); font-size: 13px; margin: 6px 0 10px; }
+  #lvGrid {
+    width: 100%; max-width: 520px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px;
+    overflow-y: auto; align-content: start; flex: 1; min-height: 0; padding-bottom: 4px;
+  }
+  @media (min-width: 420px) { #lvGrid { grid-template-columns: repeat(6, 1fr); } }
+  .lv {
+    appearance: none; border: 0; border-radius: 12px; background: var(--btn); color: var(--ink);
+    aspect-ratio: 1; min-height: 52px; display: flex; flex-direction: column; align-items: center; justify-content: center;
+    font: 700 18px system-ui, sans-serif; cursor: pointer; touch-action: manipulation; position: relative;
+  }
+  .lv small { font-size: 11px; font-weight: 600; color: var(--dim); margin-top: 2px; }
+  .lv.done { background: #1f3b3a; }
+  .lv.done small { color: #7fe3c0; }
+  .lv.star small { color: #ffd166; }
+  .lv.locked { background: #161c2a; color: #4a5470; cursor: default; }
+  .lv.current { outline: 2px solid var(--accent); outline-offset: 1px; }
+  #lvPager { display: flex; align-items: center; gap: 10px; margin-top: 10px; }
+  #lvPager span { color: var(--dim); font-size: 14px; min-width: 110px; text-align: center; }
+  #lvPager .btn:disabled { opacity: .35; }
+  @media (orientation: landscape) and (max-height: 560px) {
+    #lvGrid { grid-template-columns: repeat(10, 1fr); max-width: 760px; }
+    #levels .head, #levels .sum { max-width: 760px; }
+    .lv { aspect-ratio: auto; min-height: 48px; }
+  }
 </style>
 </head>
 <body>
@@ -106,10 +148,11 @@
     <div id="hudTop">
       <span id="roomName">Ghost Shift</span>
       <span id="roomNum"></span>
-      <span id="ghostCount"></span>
+      <span id="ghostCount" class="spacer"></span>
     </div>
+    <div id="hudRow2"><span id="par"></span><button class="btn" id="bLevels" aria-label="Level select">☰ Levels</button></div>
     <div id="hint"></div>
-    <div id="keys">Move: arrows / WASD · Next loop: Space or R · Undo ghost: Z · Reset room: Backspace · Rooms: [ and ]</div>
+    <div id="keys">Move: arrows / WASD · Next loop: Space or R · Undo ghost: Z · Reset level: Backspace · Levels: L · Prev / next: [ and ]</div>
     <div id="timer"><div id="timerFill"></div></div>
   </div>
   <div id="stage">
@@ -125,500 +168,21 @@
     <div id="actions">
       <button class="btn primary wide" id="bLoop" aria-label="End this loop and start the next">⟲ Next loop</button>
       <button class="btn" id="bUndo" aria-label="Remove the last ghost">Undo ghost</button>
-      <button class="btn" id="bReset" aria-label="Clear all ghosts in this room">Reset room</button>
+      <button class="btn" id="bReset" aria-label="Clear all ghosts in this level">Reset</button>
     </div>
   </div>
 </div>
+<div id="levels" role="dialog" aria-label="Level select">
+  <div class="head"><h2>Levels</h2><button class="btn" id="lvClose">Close</button></div>
+  <div class="sum" id="lvSum"></div>
+  <div id="lvGrid"></div>
+  <div id="lvPager"><button class="btn" id="lvPrev" aria-label="Previous page">‹</button><span id="lvPage"></span><button class="btn" id="lvNext" aria-label="Next page">›</button></div>
+</div>
 
-<script>
-"use strict";
-// ---------- Constants ----------
-const T = 32, COLS = 20, ROWS = 12;
-const TICK_MS = 1000 / 60, LOOP_TICKS = 30 * 60, SPEED = 2.5, HALF = 10;
-const MAX_GHOSTS = 8;
-const PLATE_COLORS = { a: "#f5b942", b: "#b98cff", c: "#4fd6b0" };
-const GHOST_COLORS = ["#7fd1ff", "#ff9ecf", "#a6f08a", "#ffd27f", "#c9a6ff", "#7fffe0", "#ff9f80", "#e0e0ff"];
-const DIRS = { ">": [1, 0], "<": [-1, 0], "^": [0, -1], "v": [0, 1] };
-
-// Map legend: # wall, . floor, S start, E exit, a/b/c plate, A/B/C door (opens while ALL plates of its letter are pressed),
-// > < ^ v laser emitter (beam stops at the first wall, closed door, or body).
-const ROOMS = [
-  { name: "First Shift", hint: "Stand on the plate, then tap Next loop. Your ghost will hold the door for you.", map: [
-    "####################",
-    "#..................#",
-    "#.S................#",
-    "#..................#",
-    "#..........#########",
-    "#...a......A......E#",
-    "#..........#########",
-    "#..................#",
-    "#..................#",
-    "#..................#",
-    "#..................#",
-    "####################"] },
-  { name: "Two Hands", hint: "This door needs both plates held at once.", map: [
-    "####################",
-    "#a................a#",
-    "#..................#",
-    "#.........S........#",
-    "#..................#",
-    "#########A##########",
-    "#..................#",
-    "#..................#",
-    "#.........E........#",
-    "#..................#",
-    "#..................#",
-    "####################"] },
-  { name: "Stand in the Light", hint: "Lasers stop at the first body they hit. Ghosts stay where their loop ended.", map: [
-    "####################",
-    "#..................#",
-    "#..S...............#",
-    "#..................#",
-    "#.........##########",
-    "#>.................#",
-    "##############.#####",
-    "#..................#",
-    "#.........E........#",
-    "#..................#",
-    "#..................#",
-    "####################"] },
-  { name: "Relay", hint: "A ghost can only pass a door that an older ghost is holding.", map: [
-    "####################",
-    "#......#.....#.....#",
-    "#......#.....#.....#",
-    "#.S....#.....#.....#",
-    "#......#.....#.....#",
-    "#..a...A..b..B...E.#",
-    "#......#.....#.....#",
-    "#......#.....#.....#",
-    "#......#.....#.....#",
-    "#......#.....#.....#",
-    "#......#.....#.....#",
-    "####################"] },
-  { name: "Everyone Clocks In", hint: "Five of you, one exit. Plan who holds what.", map: [
-    "####################",
-    "#S.......#.........#",
-    "#........#.........#",
-    "#..a.....A......b..#",
-    "#........#.........#",
-    "#.....b..#.........#",
-    "##.###.#############",
-    "#>.................#",
-    "##########B#########",
-    "#..................#",
-    "#.........E........#",
-    "####################"] },
-];
-
-// ---------- Room parsing ----------
-function parseRoom(def) {
-  const r = { name: def.name, hint: def.hint, grid: [], plates: [], doors: [], emitters: [], start: null, exit: null };
-  for (let y = 0; y < ROWS; y++) {
-    const row = def.map[y] || "";
-    r.grid.push([]);
-    for (let x = 0; x < COLS; x++) {
-      const c = row[x] || "#";
-      r.grid[y].push(c);
-      if (c === "S") r.start = { x: x * T + T / 2, y: y * T + T / 2 };
-      else if (c === "E") r.exit = { x, y };
-      else if (c >= "a" && c <= "c") r.plates.push({ x, y, l: c, on: false });
-      else if (c >= "A" && c <= "C") r.doors.push({ x, y, l: c.toLowerCase(), open: false });
-      else if (DIRS[c]) r.emitters.push({ x, y, d: DIRS[c], beam: null });
-    }
-  }
-  r.doorAt = {};
-  for (const d of r.doors) r.doorAt[d.y * COLS + d.x] = d;
-  return r;
-}
-
-// ---------- Game state ----------
-const G = {
-  roomIdx: 0, room: null, ghosts: [], rec: [], tick: 0,
-  phase: "ready", // ready | running | between | won
-  player: { x: 0, y: 0, fx: 1, fy: 0 }, loops: 0, flash: 0, flashText: "",
-  unlocked: 1,
-};
-try { G.unlocked = Math.max(1, parseInt(localStorage.getItem("ghostshift.unlocked") || "1", 10) || 1); } catch (e) {}
-
-function loadRoom(i) {
-  G.roomIdx = Math.max(0, Math.min(ROOMS.length - 1, i));
-  G.room = parseRoom(ROOMS[G.roomIdx]);
-  G.ghosts = [];
-  G.loops = 0;
-  startLoop();
-  hideOverlay();
-}
-
-function startLoop() {
-  G.tick = 0;
-  G.rec = [];
-  G.player.x = G.room.start.x; G.player.y = G.room.start.y;
-  G.player.fx = 1; G.player.fy = 0;
-  G.phase = "ready";
-  G.loops++;
-  updateWorld();
-}
-
-function endLoop(died) {
-  if (G.phase !== "running" && G.phase !== "ready") return;
-  if (G.rec.length > 0) {
-    G.ghosts.push({ frames: G.rec, died: !!died });
-    if (G.ghosts.length > MAX_GHOSTS) G.ghosts.shift();
-  }
-  G.flash = 40; G.flashText = died ? "Zapped. Your body stays behind." : "Rewind";
-  startLoop();
-}
-
-function undoGhost() { if (G.ghosts.length) { G.ghosts.pop(); G.flash = 30; G.flashText = "Ghost removed"; startLoop(); } }
-function resetRoom() { loadRoom(G.roomIdx); G.flash = 30; G.flashText = "Room reset"; }
-
-function ghostPos(g, t) {
-  const f = g.frames, i = Math.min(t, f.length / 2 - 1);
-  return { x: f[i * 2], y: f[i * 2 + 1], done: t >= f.length / 2 - 1 };
-}
-
-function bodies() {
-  const out = [];
-  G.ghosts.forEach((g, i) => { const p = ghostPos(g, G.tick); out.push({ x: p.x, y: p.y, ghost: i, done: p.done }); });
-  if (G.phase !== "won") out.push({ x: G.player.x, y: G.player.y, ghost: -1 });
-  return out;
-}
-
-function overlapsTile(b, tx, ty) {
-  return b.x + HALF > tx * T && b.x - HALF < tx * T + T && b.y + HALF > ty * T && b.y - HALF < ty * T + T;
-}
-
-function updateWorld() {
-  const r = G.room, bs = bodies();
-  for (const p of r.plates) {
-    p.on = bs.some(b => Math.floor(b.x / T) === p.x && Math.floor(b.y / T) === p.y);
-  }
-  for (const d of r.doors) {
-    const all = r.plates.filter(p => p.l === d.l);
-    const want = all.length > 0 && all.every(p => p.on);
-    // Doors can't shut on anyone standing in the doorway.
-    d.open = want || (d.open && bs.some(b => overlapsTile(b, d.x, d.y)));
-  }
-  // Lasers
-  let hitPlayer = false;
-  for (const e of r.emitters) {
-    let x = e.x, y = e.y, len = 0;
-    for (;;) {
-      x += e.d[0]; y += e.d[1];
-      if (solidTile(x, y)) break;
-      len++;
-    }
-    const ox = e.x * T + T / 2, oy = e.y * T + T / 2;
-    let full = (len + 0.5) * T, best = full, who = null;
-    for (const b of bs) {
-      let dist, inLine;
-      if (e.d[0]) { inLine = Math.abs(b.y - oy) < HALF + 3; dist = e.d[0] > 0 ? (b.x - HALF) - ox : ox - (b.x + HALF); }
-      else { inLine = Math.abs(b.x - ox) < HALF + 3; dist = e.d[1] > 0 ? (b.y - HALF) - oy : oy - (b.y + HALF); }
-      if (inLine && dist < best && dist > -HALF * 2) { best = Math.max(0, dist); who = b; }
-    }
-    e.beam = best; e.blocker = who;
-    if (who && who.ghost === -1) hitPlayer = true;
-  }
-  return hitPlayer;
-}
-
-function solidTile(tx, ty) {
-  if (tx < 0 || ty < 0 || tx >= COLS || ty >= ROWS) return true;
-  const c = G.room.grid[ty][tx];
-  if (c === "#" || DIRS[c]) return true;
-  const d = G.room.doorAt[ty * COLS + tx];
-  return d ? !d.open : false;
-}
-
-function collides(x, y) {
-  const x0 = Math.floor((x - HALF) / T), x1 = Math.floor((x + HALF - 0.01) / T);
-  const y0 = Math.floor((y - HALF) / T), y1 = Math.floor((y + HALF - 0.01) / T);
-  for (let ty = y0; ty <= y1; ty++) for (let tx = x0; tx <= x1; tx++) if (solidTile(tx, ty)) return true;
-  return false;
-}
-
-function movePlayer(ix, iy) {
-  const p = G.player;
-  let len = Math.hypot(ix, iy);
-  if (len < 0.15) return false;
-  if (len > 1) { ix /= len; iy /= len; }
-  p.fx = ix; p.fy = iy;
-  const dx = ix * SPEED, dy = iy * SPEED;
-  if (!collides(p.x + dx, p.y)) p.x += dx;
-  else { const s = Math.sign(dx); while (!collides(p.x + s * 0.5, p.y) && Math.abs(dx) > 0) p.x += s * 0.5; }
-  if (!collides(p.x, p.y + dy)) p.y += dy;
-  else { const s = Math.sign(dy); while (!collides(p.x, p.y + s * 0.5) && Math.abs(dy) > 0) p.y += s * 0.5; }
-  return true;
-}
-
-// One fixed 60Hz simulation step.
-function step(ix, iy) {
-  if (G.flash > 0) G.flash--;
-  if (G.phase === "ready") {
-    if (Math.hypot(ix, iy) < 0.15) return; // loop clock starts on first move
-    G.phase = "running";
-  }
-  if (G.phase !== "running") return;
-  movePlayer(ix, iy);
-  G.rec.push(Math.round(G.player.x * 10) / 10, Math.round(G.player.y * 10) / 10);
-  G.tick++;
-  const zapped = updateWorld();
-  if (zapped) { endLoop(true); return; }
-  const e = G.room.exit;
-  if (Math.floor(G.player.x / T) === e.x && Math.floor(G.player.y / T) === e.y) { win(); return; }
-  if (G.tick >= LOOP_TICKS) endLoop(false);
-}
-
-function win() {
-  G.phase = "won";
-  const next = G.roomIdx + 1;
-  if (next + 1 > G.unlocked) { G.unlocked = Math.min(ROOMS.length, next + 1); try { localStorage.setItem("ghostshift.unlocked", String(G.unlocked)); } catch (e) {} }
-  const n = G.loops, last = next >= ROOMS.length;
-  showOverlay(
-    `<h2>${last ? "All shifts covered" : "Shift complete"}</h2>
-     <p>${ROOMS[G.roomIdx].name}: solved on loop ${n} with ${G.ghosts.length} ghost${G.ghosts.length === 1 ? "" : "s"}.</p>
-     ${last ? "<p>That's every room in this first build. Thanks for playing!</p>" : ""}
-     <button class="btn primary" id="ovNext">${last ? "Play again from room 1" : "Next room"}</button>`,
-    () => loadRoom(last ? 0 : next));
-}
-
-// ---------- Overlay ----------
-const overlay = document.getElementById("overlay"), card = document.getElementById("card");
-let overlayAction = null;
-function showOverlay(html, action) {
-  card.innerHTML = html; overlay.classList.add("show"); overlayAction = action;
-  const b = card.querySelector("button"); if (b) b.addEventListener("click", () => runOverlay());
-}
-function hideOverlay() { overlay.classList.remove("show"); overlayAction = null; }
-function runOverlay() { const a = overlayAction; hideOverlay(); if (a) a(); }
-
-// ---------- Input ----------
-const keys = new Set();
-const pad = { x: 0, y: 0 };
-addEventListener("keydown", e => {
-  const k = e.key.toLowerCase();
-  if (["arrowup", "arrowdown", "arrowleft", "arrowright", " ", "backspace"].includes(k)) e.preventDefault();
-  if (e.repeat) { keys.add(k); return; }
-  keys.add(k);
-  if (overlay.classList.contains("show")) { if (k === "enter" || k === " ") runOverlay(); return; }
-  if (k === " " || k === "r") endLoop(false);
-  else if (k === "z") undoGhost();
-  else if (k === "backspace") resetRoom();
-  else if (k === "[") loadRoom(G.roomIdx - 1);
-  else if (k === "]" && G.roomIdx + 1 < G.unlocked) loadRoom(G.roomIdx + 1);
-});
-addEventListener("keyup", e => keys.delete(e.key.toLowerCase()));
-addEventListener("blur", () => { keys.clear(); pad.x = pad.y = 0; });
-
-function keyInput() {
-  let x = 0, y = 0;
-  if (keys.has("arrowleft") || keys.has("a")) x -= 1;
-  if (keys.has("arrowright") || keys.has("d")) x += 1;
-  if (keys.has("arrowup") || keys.has("w")) y -= 1;
-  if (keys.has("arrowdown") || keys.has("s")) y += 1;
-  return [x, y];
-}
-
-// Touch / mouse joystick
-const padEl = document.getElementById("pad"), knob = document.getElementById("knob");
-let padPointer = null;
-function padMove(e) {
-  const r = padEl.getBoundingClientRect();
-  let dx = e.clientX - (r.left + r.width / 2), dy = e.clientY - (r.top + r.height / 2);
-  const max = r.width * 0.32, d = Math.hypot(dx, dy);
-  if (d > max) { dx *= max / d; dy *= max / d; }
-  knob.style.transform = `translate(${dx}px,${dy}px)`;
-  let nx = dx / max, ny = dy / max;
-  // Snap to the 8 directions so walking straight through 1-tile gaps is easy on a thumb.
-  const m = Math.hypot(nx, ny);
-  if (m < 0.25) { nx = 0; ny = 0; }
-  else { const a = Math.round(Math.atan2(ny, nx) / (Math.PI / 4)) * (Math.PI / 4); nx = Math.cos(a); ny = Math.sin(a); if (Math.abs(nx) < 1e-6) nx = 0; if (Math.abs(ny) < 1e-6) ny = 0; }
-  pad.x = nx; pad.y = ny;
-}
-function padEnd() { padPointer = null; pad.x = pad.y = 0; knob.style.transform = ""; }
-padEl.addEventListener("pointerdown", e => { e.preventDefault(); padPointer = e.pointerId; padEl.setPointerCapture(e.pointerId); padMove(e); });
-padEl.addEventListener("pointermove", e => { if (e.pointerId === padPointer) padMove(e); });
-padEl.addEventListener("pointerup", padEnd);
-padEl.addEventListener("pointercancel", padEnd);
-padEl.addEventListener("lostpointercapture", padEnd);
-
-function bindBtn(id, fn) {
-  const el = document.getElementById(id);
-  el.addEventListener("click", e => { e.preventDefault(); if (!overlay.classList.contains("show")) fn(); el.blur(); });
-}
-bindBtn("bLoop", () => endLoop(false));
-bindBtn("bUndo", undoGhost);
-bindBtn("bReset", resetRoom);
-document.addEventListener("contextmenu", e => e.preventDefault());
-document.addEventListener("dblclick", e => e.preventDefault());
-
-// ---------- Rendering ----------
-const cv = document.getElementById("cv"), ctx = cv.getContext("2d");
-const stage = document.getElementById("stage");
-let scale = 1, dpr = 1;
-function resize() {
-  dpr = Math.min(2, window.devicePixelRatio || 1);
-  const sw = stage.clientWidth - 16, sh = stage.clientHeight - 8;
-  scale = Math.max(0.3, Math.min(sw / (COLS * T), sh / (ROWS * T)));
-  const w = Math.floor(COLS * T * scale), h = Math.floor(ROWS * T * scale);
-  cv.style.width = w + "px"; cv.style.height = h + "px";
-  cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr);
-  bgCache = null;
-}
-addEventListener("resize", resize);
-addEventListener("orientationchange", () => setTimeout(resize, 150));
-
-function roundRect(x, y, w, h, r) {
-  ctx.beginPath(); ctx.moveTo(x + r, y); ctx.arcTo(x + w, y, x + w, y + h, r); ctx.arcTo(x + w, y + h, x, y + h, r);
-  ctx.arcTo(x, y + h, x, y, r); ctx.arcTo(x, y, x + w, y, r); ctx.closePath();
-}
-
-// Static tiles are drawn once per room/size into an offscreen canvas (cheap on low-end phones).
-let bgCache = null, bgRoom = null;
-function drawStatic() {
-  if (bgCache && bgRoom === G.room) return bgCache;
-  const c = document.createElement("canvas"); c.width = cv.width; c.height = cv.height;
-  const g = c.getContext("2d"), k = scale * dpr;
-  g.setTransform(k, 0, 0, k, 0, 0);
-  g.fillStyle = "#151c2b"; g.fillRect(0, 0, COLS * T, ROWS * T);
-  const r = G.room;
-  for (let y = 0; y < ROWS; y++) for (let x = 0; x < COLS; x++) {
-    const ch = r.grid[y][x];
-    if (ch === "#") {
-      g.fillStyle = "#2a3550"; g.fillRect(x * T, y * T, T, T);
-      g.fillStyle = "#334164"; g.fillRect(x * T, y * T, T, 3);
-    } else {
-      g.fillStyle = (x + y) % 2 ? "#182032" : "#1a2335"; g.fillRect(x * T, y * T, T, T);
-    }
-  }
-  // exit
-  const e = r.exit;
-  g.fillStyle = "#1f5a46"; g.fillRect(e.x * T + 3, e.y * T + 3, T - 6, T - 6);
-  g.strokeStyle = "#5ff0b0"; g.lineWidth = 2; g.strokeRect(e.x * T + 5, e.y * T + 5, T - 10, T - 10);
-  // emitters
-  for (const m of r.emitters) {
-    const cx = m.x * T + T / 2, cy = m.y * T + T / 2;
-    g.fillStyle = "#3a2430"; g.fillRect(m.x * T + 2, m.y * T + 2, T - 4, T - 4);
-    g.fillStyle = "#ff5470"; g.beginPath();
-    g.moveTo(cx + m.d[0] * 11, cy + m.d[1] * 11);
-    g.lineTo(cx - m.d[0] * 6 - m.d[1] * 9, cy - m.d[1] * 6 - m.d[0] * 9);
-    g.lineTo(cx - m.d[0] * 6 + m.d[1] * 9, cy - m.d[1] * 6 + m.d[0] * 9);
-    g.closePath(); g.fill();
-  }
-  bgCache = c; bgRoom = r;
-  return c;
-}
-
-function draw(now) {
-  const k = scale * dpr, r = G.room;
-  ctx.setTransform(1, 0, 0, 1, 0, 0);
-  ctx.drawImage(drawStatic(), 0, 0);
-  ctx.setTransform(k, 0, 0, k, 0, 0);
-  const pulse = 0.5 + 0.5 * Math.sin(now / 180);
-
-  // plates
-  for (const p of r.plates) {
-    const col = PLATE_COLORS[p.l];
-    ctx.globalAlpha = p.on ? 1 : 0.55;
-    ctx.fillStyle = col; roundRect(p.x * T + 6, p.y * T + 6, T - 12, T - 12, 5); ctx.fill();
-    ctx.globalAlpha = 1;
-    ctx.fillStyle = "#151c2b"; roundRect(p.x * T + (p.on ? 11 : 9), p.y * T + (p.on ? 11 : 9), T - (p.on ? 22 : 18), T - (p.on ? 22 : 18), 3); ctx.fill();
-  }
-  // doors
-  for (const d of r.doors) {
-    const col = PLATE_COLORS[d.l], x = d.x * T, y = d.y * T;
-    if (d.open) {
-      ctx.strokeStyle = col; ctx.globalAlpha = 0.35; ctx.lineWidth = 2; ctx.strokeRect(x + 3, y + 3, T - 6, T - 6); ctx.globalAlpha = 1;
-    } else {
-      ctx.fillStyle = "#222b40"; ctx.fillRect(x, y, T, T);
-      ctx.fillStyle = col;
-      for (let i = 0; i < 4; i++) ctx.fillRect(x + 4 + i * 7, y + 2, 3, T - 4);
-    }
-  }
-  // lasers
-  for (const m of r.emitters) {
-    const ox = m.x * T + T / 2 + m.d[0] * 12, oy = m.y * T + T / 2 + m.d[1] * 12;
-    const L = Math.max(0, m.beam - 12);
-    ctx.strokeStyle = "rgba(255,84,112," + (0.25 + 0.2 * pulse) + ")"; ctx.lineWidth = 8;
-    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + m.d[0] * L, oy + m.d[1] * L); ctx.stroke();
-    ctx.strokeStyle = "#ffd0d8"; ctx.lineWidth = 2;
-    ctx.beginPath(); ctx.moveTo(ox, oy); ctx.lineTo(ox + m.d[0] * L, oy + m.d[1] * L); ctx.stroke();
-  }
-  // ghosts
-  G.ghosts.forEach((g, i) => {
-    const p = ghostPos(g, G.tick), col = GHOST_COLORS[i % GHOST_COLORS.length];
-    ctx.globalAlpha = p.done ? 0.75 : 0.55;
-    ctx.fillStyle = col; roundRect(p.x - HALF, p.y - HALF, HALF * 2, HALF * 2, 6); ctx.fill();
-    ctx.globalAlpha = 1;
-    if (p.done) { ctx.strokeStyle = col; ctx.lineWidth = 1.5; roundRect(p.x - HALF - 3, p.y - HALF - 3, HALF * 2 + 6, HALF * 2 + 6, 8); ctx.stroke(); }
-    ctx.fillStyle = "#0f1420"; ctx.font = "bold 12px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(g.died ? "×" : String(i + 1), p.x, p.y + 1);
-  });
-  // player
-  if (G.phase !== "won") {
-    const p = G.player;
-    ctx.fillStyle = "#f4f7ff"; roundRect(p.x - HALF, p.y - HALF, HALF * 2, HALF * 2, 6); ctx.fill();
-    ctx.strokeStyle = "#6fe3ff"; ctx.lineWidth = 2; ctx.stroke();
-    const ex = p.fx * 3, ey = p.fy * 3;
-    ctx.fillStyle = "#0f1420";
-    ctx.fillRect(p.x - 5 + ex, p.y - 3 + ey, 3, 4); ctx.fillRect(p.x + 2 + ex, p.y - 3 + ey, 3, 4);
-  }
-  // flash text
-  if (G.flash > 0) {
-    ctx.globalAlpha = Math.min(1, G.flash / 15);
-    ctx.fillStyle = "rgba(15,20,32,.8)"; roundRect(COLS * T / 2 - 150, 10, 300, 34, 10); ctx.fill();
-    ctx.fillStyle = "#e8ecf5"; ctx.font = "600 16px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(G.flashText, COLS * T / 2, 28); ctx.globalAlpha = 1;
-  } else if (G.phase === "ready") {
-    ctx.fillStyle = "rgba(15,20,32,.75)"; roundRect(COLS * T / 2 - 150, 10, 300, 34, 10); ctx.fill();
-    ctx.fillStyle = "#9fb0d0"; ctx.font = "600 15px system-ui, sans-serif"; ctx.textAlign = "center"; ctx.textBaseline = "middle";
-    ctx.fillText(`Loop ${G.loops}: move to start the clock`, COLS * T / 2, 28);
-  }
-}
-
-// HUD (DOM writes only when values change)
-const elName = document.getElementById("roomName"), elNum = document.getElementById("roomNum"),
-  elGhosts = document.getElementById("ghostCount"), elHint = document.getElementById("hint"),
-  elFill = document.getElementById("timerFill");
-let hudKey = "", lastFill = -1;
-function hud() {
-  const key = G.roomIdx + "|" + G.ghosts.length + "|" + G.loops;
-  if (key !== hudKey) {
-    hudKey = key;
-    elName.textContent = ROOMS[G.roomIdx].name;
-    elNum.textContent = `Room ${G.roomIdx + 1}/${ROOMS.length}`;
-    elGhosts.textContent = `Loop ${G.loops} · ${G.ghosts.length} ghost${G.ghosts.length === 1 ? "" : "s"}`;
-    elHint.textContent = ROOMS[G.roomIdx].hint;
-  }
-  const f = Math.round((1 - G.tick / LOOP_TICKS) * 200) / 200;
-  if (f !== lastFill) { lastFill = f; elFill.style.transform = `scaleX(${f})`; elFill.style.background = f < 0.2 ? "#ff7a8a" : "#6fe3ff"; }
-}
-
-// ---------- Main loop (fixed timestep) ----------
-let acc = 0, last = performance.now();
-function frame(now) {
-  acc += Math.min(250, now - last); last = now;
-  while (acc >= TICK_MS) {
-    const [kx, ky] = keyInput();
-    const ix = Math.max(-1, Math.min(1, kx + pad.x)), iy = Math.max(-1, Math.min(1, ky + pad.y));
-    if (!overlay.classList.contains("show")) step(ix, iy);
-    acc -= TICK_MS;
-  }
-  draw(now); hud();
-  requestAnimationFrame(frame);
-}
-document.addEventListener("visibilitychange", () => { last = performance.now(); acc = 0; });
-
-// Test hook for automated playthroughs (harmless in normal play).
-window.GhostShift = { G, ROOMS, loadRoom, step, endLoop, T };
-
-loadRoom(0);
-resize();
-showOverlay(`<h2>Ghost Shift</h2>
-  <p>Every 30 seconds the loop rewinds, and your past runs play back as ghosts.</p>
-  <p>Use them to hold plates, keep doors open and block lasers, then reach the green exit.</p>
-  <button class="btn primary">Start</button>`, () => {});
-requestAnimationFrame(frame);
-</script>
+<script src="engine.js"></script>
+<script src="solver.js"></script>
+<script src="levels.js"></script>
+<script src="generator.js"></script>
+<script src="game.js"></script>
 </body>
 </html>
